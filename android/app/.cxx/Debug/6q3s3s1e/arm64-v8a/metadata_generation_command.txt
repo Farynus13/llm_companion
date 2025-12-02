@@ -1,0 +1,18 @@
+                    -H/home/oskar/Projects/llm_companion/android/app/src/main/cpp
+-DCMAKE_SYSTEM_NAME=Android
+-DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+-DCMAKE_SYSTEM_VERSION=19
+-DANDROID_PLATFORM=android-19
+-DANDROID_ABI=arm64-v8a
+-DCMAKE_ANDROID_ARCH_ABI=arm64-v8a
+-DANDROID_NDK=/home/oskar/Android/Sdk/ndk/23.1.7779620
+-DCMAKE_ANDROID_NDK=/home/oskar/Android/Sdk/ndk/23.1.7779620
+-DCMAKE_TOOLCHAIN_FILE=/home/oskar/Android/Sdk/ndk/23.1.7779620/build/cmake/android.toolchain.cmake
+-DCMAKE_MAKE_PROGRAM=/home/oskar/Android/Sdk/cmake/3.18.1/bin/ninja
+-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/home/oskar/Projects/llm_companion/build/app/intermediates/cxx/Debug/6q3s3s1e/obj/arm64-v8a
+-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/home/oskar/Projects/llm_companion/build/app/intermediates/cxx/Debug/6q3s3s1e/obj/arm64-v8a
+-DCMAKE_BUILD_TYPE=Debug
+-B/home/oskar/Projects/llm_companion/android/app/.cxx/Debug/6q3s3s1e/arm64-v8a
+-GNinja
+                    Build command args: []
+                    Version: 2

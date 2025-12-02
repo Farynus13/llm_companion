@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/home/oskar/Projects/llm_companion/android/app/.cxx/Debug/6q3s3s1e/x86",
+  "command": "/home/oskar/Android/Sdk/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=i686-none-linux-android19 --gcc-toolchain=/home/oskar/Android/Sdk/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64 --sysroot=/home/oskar/Android/Sdk/ndk/23.1.7779620/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dnative_lib_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -mstackrealign -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security   -fno-limit-debug-info  -fPIC -o CMakeFiles/native_lib.dir/native_lib.cpp.o -c /home/oskar/Projects/llm_companion/android/app/src/main/cpp/native_lib.cpp",
+  "file": "/home/oskar/Projects/llm_companion/android/app/src/main/cpp/native_lib.cpp"
+}
+]
