@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+
+// Import our new modules
 import 'native_bridge.dart';
+import 'models/chat_message.dart';
+import 'logic/prompt_engine.dart';
 
 void main() {
   runApp(const MyApp());
@@ -13,7 +18,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      theme: ThemeData(primarySwatch: Colors.blue),
+      title: 'AI Companion',
+      theme: ThemeData(primarySwatch: Colors.indigo),
       home: const ChatScreen(),
     );
   }
@@ -27,83 +33,97 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final NativeBridge _bridge = NativeBridge();
+  final PromptEngine _promptEngine = PromptEngine(); // The new logic handler
   final TextEditingController _controller = TextEditingController();
   
-  String _status = "Please select a model file (.gguf)";
-  String _response = "";
+  // State
+  final List<ChatMessage> _messages = []; // Structured History
+  String _status = "No model loaded.";
   bool _isModelLoaded = false;
-  bool _isLoading = false;
+  bool _isBusy = false; 
 
-  // 1. Function to open File Picker
- Future<void> _pickModelFile() async {
-    // REMOVED: The manual Permission.storage request which was causing the block.
-    
+  // --- IMPORT LOGIC (Kept here for now, can be moved to a Service later) ---
+  Future<void> _importAndLoadModel() async {
     try {
-      setState(() => _status = "Opening File Picker...");
-      
-      // Open the picker
-      // allowCompression: false ensures it doesn't try to mess with the binary file
       FilePickerResult? result = await FilePicker.platform.pickFiles(
-        dialogTitle: 'Select your AI Model',
-        allowCompression: false, 
+        dialogTitle: 'Select Model',
+        withReadStream: true, 
       );
 
-      if (result != null && result.files.single.path != null) {
-        String path = result.files.single.path!;
-        setState(() => _status = "Loading: $path ...");
-        
-        // Slight delay to update UI
-        await Future.delayed(const Duration(milliseconds: 100));
+      if (result == null) return; 
 
-        // Load into C++
-        bool success = await _bridge.loadModel(path);
+      setState(() {
+        _isBusy = true;
+        _status = "Importing model...";
+      });
 
-        setState(() {
-          _isModelLoaded = success;
-          _status = success 
-              ? "Model Loaded!\n(${path.split('/').last})" 
-              : "Error: C++ failed to load model.";
-        });
-      } else {
-        // User canceled
-        setState(() => _status = "No file selected.");
+      final directory = await getApplicationDocumentsDirectory();
+      final String destPath = p.join(directory.path, "imported_model.gguf");
+
+      PlatformFile pickedFile = result.files.single;
+      if (pickedFile.path != null) {
+        await File(pickedFile.path!).copy(destPath);
+      } else if (pickedFile.readStream != null) {
+        final sink = File(destPath).openWrite();
+        await pickedFile.readStream!.pipe(sink);
+        await sink.close();
       }
+
+      setState(() => _status = "Loading Engine...");
+      
+      await Future.delayed(const Duration(milliseconds: 200));
+      bool success = await _bridge.loadModel(destPath);
+
+      setState(() {
+        _isModelLoaded = success;
+        _status = success ? "Ready: ${pickedFile.name}" : "Error Loading Engine";
+        _isBusy = false;
+      });
+
     } catch (e) {
-      setState(() => _status = "Error: $e");
+      setState(() {
+        _status = "Error: $e";
+        _isBusy = false;
+      });
     }
   }
 
   void _sendMessage() async {
     if (_controller.text.isEmpty || !_isModelLoaded) return;
-    
-    String userText = _controller.text;
+    String text = _controller.text;
     _controller.clear();
     
+    // 1. Add User Message to UI
     setState(() {
-      _response += "\n\nYou: $userText\nAI: Thinking...";
-      _isLoading = true;
+      _messages.add(ChatMessage(
+        content: text, 
+        isUser: true, 
+        timestamp: DateTime.now()
+      ));
+      _isBusy = true;
     });
 
-    // This is the industry standard format for modern models.
-    String formattedPrompt = 
-      "<|im_start|>system\n"
-      "You are a helpful and intelligent AI assistant.\n"
-      "<|im_end|>\n"
-      "<|im_start|>user\n"
-      "$userText\n"
-      "<|im_end|>\n"
-      "<|im_start|>assistant\n";
-    // -----------------------------------
+    // 2. Build Prompt using the Logic Engine
+    // We pass the history (minus the one we just added, or handle it inside)
+    // Here we pass the NEW text separately as our engine expects.
+    String formattedPrompt = _promptEngine.buildPrompt(
+      _messages.sublist(0, _messages.length - 1), // History
+      text // New Input
+    );
 
-    // Run inference (Short delay to allow UI to update "Thinking")
     await Future.delayed(const Duration(milliseconds: 50)); 
     
-    // We send the FORMATTED prompt to C++, not the raw text
+    // 3. Call C++
     String aiReply = _bridge.generate(formattedPrompt);
 
+    // 4. Add AI Message to UI
     setState(() {
-      _response = _response.replaceFirst("Thinking...", aiReply.trim());
-      _isLoading = false;
+      _messages.add(ChatMessage(
+        content: aiReply.trim(), 
+        isUser: false, 
+        timestamp: DateTime.now()
+      ));
+      _isBusy = false;
     });
   }
 
@@ -111,70 +131,82 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("Local LLM Companion")),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // STATUS AREA
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: _isModelLoaded ? Colors.green[100] : Colors.red[100],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Expanded(child: Text(_status, style: const TextStyle(fontWeight: FontWeight.bold))),
-                  if (!_isModelLoaded)
-                    ElevatedButton(
-                      onPressed: _pickModelFile,
-                      child: const Text("Load Model"),
-                    )
-                ],
+      body: Column(
+        children: [
+          // Status Bar
+          Container(
+            padding: const EdgeInsets.all(12),
+            color: _isModelLoaded ? Colors.green[50] : Colors.blue[50],
+            child: Row(
+              children: [
+                Expanded(child: Text(_status, style: const TextStyle(fontSize: 13))),
+                if (!_isModelLoaded && !_isBusy)
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.file_upload, size: 16),
+                    label: const Text("Import Model"),
+                    onPressed: _importAndLoadModel,
+                  )
+              ],
+            ),
+          ),
+          
+          // Chat List (The proper way to show chat)
+          Expanded(
+            child: Container(
+              color: const Color(0xFFF5F5F5),
+              child: ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _messages.length,
+                itemBuilder: (context, index) {
+                  final msg = _messages[index];
+                  return Align(
+                    alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: msg.isUser ? Colors.indigo[100] : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      // Constraint width to 80% of screen
+                      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
+                      child: Text(msg.content),
+                    ),
+                  );
+                },
               ),
             ),
-            const SizedBox(height: 10),
-            
-            // CHAT HISTORY
-            Expanded(
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SingleChildScrollView(
-                  child: Text(_response, style: const TextStyle(fontSize: 16)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            
-            // INPUT AREA
-            Row(
+          ),
+          
+          // Input
+          Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Row(
               children: [
                 Expanded(
                   child: TextField(
-                    controller: _controller, 
+                    controller: _controller,
+                    enabled: _isModelLoaded && !_isBusy,
                     decoration: const InputDecoration(
                       hintText: "Type a message...",
                       border: OutlineInputBorder(),
                     ),
-                    enabled: _isModelLoaded, // Disable input if no model
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton(
-                  icon: _isLoading 
-                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator()) 
-                      : const Icon(Icons.send),
-                  onPressed: (_isModelLoaded && !_isLoading) ? _sendMessage : null,
-                )
+                FloatingActionButton(
+                  mini: true,
+                  onPressed: (_isModelLoaded && !_isBusy) ? _sendMessage : null,
+                  backgroundColor: _isModelLoaded ? Colors.indigo : Colors.grey,
+                  child: _isBusy 
+                    ? const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                    : const Icon(Icons.send),
+                ),
               ],
-            )
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
