@@ -97,7 +97,7 @@ extern "C" {
 
         // -- Generate Loop --
         std::string result = "";
-        int n_predict = 200; 
+        int n_predict = 1000; // Max tokens to predict
 
         for (int i = 0; i < n_predict; i++) {
             auto* logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
