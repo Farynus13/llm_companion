@@ -91,14 +91,15 @@ extern "C" {
         tokens_list.resize(n_tokens);
 
         // -- Batch Setup --
-        llama_batch batch = llama_batch_init(512, 0, 1);
+        llama_batch batch = llama_batch_init(4096, 0, 1); 
+        
         for (size_t i = 0; i < tokens_list.size(); i++) {
             batch_add(batch, tokens_list[i], i, 0, (i == tokens_list.size() - 1));
         }
 
         if (llama_decode(ctx, batch) != 0) {
             llama_batch_free(batch);
-            return strdup("Error: Decode failed");
+            return strdup("Error: Decode failed (Context Full?)");
         }
 
         // -- Generate Loop --
@@ -107,9 +108,13 @@ extern "C" {
 
         for (int i = 0; i < n_predict; i++) {
             auto* logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
+            
+            if (logits == nullptr) {
+                break; // Prevent SIGSEGV if logits are missing
+            }
+
             int n_vocab = llama_n_vocab(model);
 
-            // Greedy Sampling
             llama_token new_token_id = 0;
             float max_prob = -1e9;
             for (int k = 0; k < n_vocab; k++) {
