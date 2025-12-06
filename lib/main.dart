@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'native_bridge.dart';
 import 'models/chat_message.dart';
@@ -260,7 +261,23 @@ class _ChatScreenState extends State<ChatScreen> {
                             border: Border.all(color: Colors.grey.shade300),
                           ),
                           constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
-                          child: Text(msg.content),
+                          child: MarkdownBody(
+                            data: msg.content,
+                            selectable: true, // Allow copying text
+                            styleSheet: MarkdownStyleSheet(
+                              p: const TextStyle(fontSize: 16),
+                              // Code block styling
+                              code: TextStyle(
+                                backgroundColor: msg.isUser ? Colors.indigo[300] : Colors.grey[200],
+                                fontFamily: 'monospace',
+                                fontSize: 14,
+                              ),
+                              codeblockDecoration: BoxDecoration(
+                                color: msg.isUser ? Colors.indigo[300] : Colors.grey[200],
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            ),
+                          ),
                         ),
                       );
                     },
