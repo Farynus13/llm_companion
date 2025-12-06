@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
-import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'native_bridge.dart';
 import 'models/chat_message.dart';
+import 'models/model_config.dart';
 import 'logic/prompt_engine.dart';
-import 'services/database_service.dart'; // Import Database
+import 'services/database_service.dart';
+import 'ui/model_sheet.dart';
 
 void main() {
   runApp(const MyApp());
@@ -32,98 +34,104 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  // Services
   final NativeBridge _bridge = NativeBridge();
   final PromptEngine _promptEngine = PromptEngine();
   final DatabaseService _db = DatabaseService();
   final TextEditingController _controller = TextEditingController();
 
-  // State
-  int _currentConversationId = -1; // -1 means not initialized
+  int _currentConversationId = -1;
   List<ChatMessage> _messages = [];
-  List<Map<String, dynamic>> _sidebarChats = []; // List for the drawer
+  List<Map<String, dynamic>> _sidebarChats = [];
   
-  String _status = "No model loaded.";
+  String _status = "Initializing...";
   bool _isModelLoaded = false;
   bool _isBusy = false;
+  String _loadedModelName = "None";
 
   @override
   void initState() {
     super.initState();
     _loadSidebar();
-    // Don't create a new chat immediately, wait for user or create one on first message
+    _autoLoadLastModel();
   }
 
-  // --- DATABASE LOGIC ---
+  // 1. Auto Load Logic
+  Future<void> _autoLoadLastModel() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastId = prefs.getString('last_model_id');
+    
+    if (lastId != null) {
+      final config = ModelRegistry.findById(lastId);
+      if (config != null) {
+        // Check if file exists
+        final dir = await getApplicationDocumentsDirectory();
+        final path = p.join(dir.path, config.filename);
+        
+        if (await File(path).exists()) {
+          _loadModelInternal(path, config);
+        } else {
+          setState(() => _status = "Last model found but file missing. Please download again.");
+        }
+      }
+    } else {
+      setState(() => _status = "Select a model to begin.");
+    }
+  }
 
-  // Load the list of chats for the Drawer
+  // 2. Shared Loading Function
+  Future<void> _loadModelInternal(String path, ModelConfig config) async {
+    setState(() {
+      _status = "Loading ${config.name}...";
+      _isBusy = true;
+    });
+    
+    // Update Prompt Engine Format automatically!
+    _promptEngine.format = config.format;
+
+    await Future.delayed(const Duration(milliseconds: 200));
+    bool success = await _bridge.loadModel(path);
+
+    setState(() {
+      _isModelLoaded = success;
+      _loadedModelName = config.name;
+      _status = success ? "Ready" : "Failed to load";
+      _isBusy = false;
+    });
+  }
+
+  // 3. Show the Model Selection Sheet
+  void _openModelManager() {
+    showModalBottomSheet(
+      context: context, 
+      builder: (context) => ModelSheet(
+        onModelSelected: (path, config) => _loadModelInternal(path, config),
+      )
+    );
+  }
+
   Future<void> _loadSidebar() async {
     final chats = await _db.getConversations();
-    setState(() {
-      _sidebarChats = chats;
-    });
+    setState(() => _sidebarChats = chats);
   }
 
-  // Create a new blank chat
   Future<void> _startNewChat() async {
-    // Generate a default title (e.g., "Chat #5")
     String title = "Chat #${_sidebarChats.length + 1}";
     int newId = await _db.createConversation(title);
-    
     setState(() {
       _currentConversationId = newId;
-      _messages = []; // Clear UI
+      _messages = [];
     });
-    
-    await _loadSidebar(); // Refresh list
-    Navigator.pop(context); // Close drawer if open
+    await _loadSidebar();
+    Navigator.pop(context);
   }
 
-  // Switch to an old chat
   Future<void> _loadChat(int id) async {
     final history = await _db.getMessages(id);
     setState(() {
       _currentConversationId = id;
       _messages = history;
     });
-    Navigator.pop(context); // Close drawer
-  }
-  
-  // ----------------------
-
-  Future<void> _importAndLoadModel() async {
-    // ... (Same import logic as before) ...
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        dialogTitle: 'Select Model',
-        withReadStream: true, 
-      );
-      if (result == null) return; 
-
-      setState(() => _status = "Importing...");
-      final directory = await getApplicationDocumentsDirectory();
-      final String destPath = p.join(directory.path, "imported_model.gguf");
-
-      PlatformFile pickedFile = result.files.single;
-      if (pickedFile.path != null) {
-        await File(pickedFile.path!).copy(destPath);
-      } else if (pickedFile.readStream != null) {
-        final sink = File(destPath).openWrite();
-        await pickedFile.readStream!.pipe(sink);
-        await sink.close();
-      }
-
-      setState(() => _status = "Loading Engine...");
-      await Future.delayed(const Duration(milliseconds: 200));
-      bool success = await _bridge.loadModel(destPath);
-
-      setState(() {
-        _isModelLoaded = success;
-        _status = success ? "Ready: ${pickedFile.name}" : "Error Loading Engine";
-      });
-    } catch (e) {
-      setState(() => _status = "Error: $e");
-    }
+    Navigator.pop(context);
   }
 
   void _sendMessage() async {
@@ -131,48 +139,29 @@ class _ChatScreenState extends State<ChatScreen> {
     String text = _controller.text;
     _controller.clear();
 
-    // Auto-create chat if this is the first message
     if (_currentConversationId == -1) {
-      // Use the first few words as the title
       String title = text.length > 20 ? "${text.substring(0, 20)}..." : text;
       _currentConversationId = await _db.createConversation(title);
       await _loadSidebar();
     }
     
-    // 1. Create User Message
-    final userMsg = ChatMessage(
-      conversationId: _currentConversationId,
-      content: text, 
-      isUser: true, 
-      timestamp: DateTime.now()
-    );
-
-    // 2. Save to DB & UI
+    final userMsg = ChatMessage(conversationId: _currentConversationId, content: text, isUser: true, timestamp: DateTime.now());
     await _db.insertMessage(userMsg);
     setState(() {
       _messages.add(userMsg);
       _isBusy = true;
     });
 
-    // 3. Generate Prompt
+    // Prompt Engine now uses the format from the Config!
     String formattedPrompt = _promptEngine.buildPrompt(
       _messages.sublist(0, _messages.length - 1), 
       text 
     );
 
-    // 4. Call C++
     await Future.delayed(const Duration(milliseconds: 50)); 
-    String aiReply = _bridge.generate(formattedPrompt).trim();
+    String aiReply = _bridge.generate(formattedPrompt, _promptEngine.stopToken).trim();
 
-    // 5. Create AI Message
-    final aiMsg = ChatMessage(
-      conversationId: _currentConversationId,
-      content: aiReply, 
-      isUser: false, 
-      timestamp: DateTime.now()
-    );
-
-    // 6. Save to DB & UI
+    final aiMsg = ChatMessage(conversationId: _currentConversationId, content: aiReply, isUser: false, timestamp: DateTime.now());
     await _db.insertMessage(aiMsg);
     setState(() {
       _messages.add(aiMsg);
@@ -183,8 +172,22 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Local LLM Companion")),
-      // --- THE SIDEBAR ---
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("AI Companion", style: TextStyle(fontSize: 18)),
+            Text(_isModelLoaded ? _loadedModelName : _status, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w300))
+          ],
+        ),
+        actions: [
+          // THE NEW BUTTON
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _openModelManager,
+          )
+        ],
+      ),
       drawer: Drawer(
         child: Column(
           children: [
@@ -193,11 +196,7 @@ class _ChatScreenState extends State<ChatScreen> {
               accountEmail: Text("${_sidebarChats.length} saved chats"),
               currentAccountPicture: const CircleAvatar(child: Icon(Icons.history)),
             ),
-            ListTile(
-              leading: const Icon(Icons.add),
-              title: const Text("New Chat"),
-              onTap: _startNewChat,
-            ),
+            ListTile(leading: const Icon(Icons.add), title: const Text("New Chat"), onTap: _startNewChat),
             const Divider(),
             Expanded(
               child: ListView.builder(
@@ -213,9 +212,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       onPressed: () async {
                         await _db.deleteConversation(chat['id']);
                         _loadSidebar();
-                        if (chat['id'] == _currentConversationId) {
-                           setState(() => _messages = []); // Clear if deleted current
-                        }
+                        if (chat['id'] == _currentConversationId) setState(() => _messages = []); 
                       },
                     ),
                   );
@@ -225,30 +222,22 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
-      // -------------------
-      
       body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            color: _isModelLoaded ? Colors.green[50] : Colors.blue[50],
-            child: Row(
-              children: [
-                Expanded(child: Text(_status, style: const TextStyle(fontSize: 13))),
-                if (!_isModelLoaded && !_isBusy)
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.file_upload, size: 16),
-                    label: const Text("Import Model"),
-                    onPressed: _importAndLoadModel,
-                  )
-              ],
-            ),
-          ),
           Expanded(
             child: Container(
               color: const Color(0xFFF5F5F5),
               child: _messages.isEmpty 
-                ? const Center(child: Text("Start a new conversation!", style: TextStyle(color: Colors.grey)))
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.chat_bubble_outline, size: 48, color: Colors.grey),
+                        const SizedBox(height: 10),
+                        Text(_isModelLoaded ? "Start chatting!" : "Load a model in Settings (top right)", style: const TextStyle(color: Colors.grey)),
+                      ],
+                    )
+                  )
                 : ListView.builder(
                     padding: const EdgeInsets.all(16),
                     itemCount: _messages.length,
@@ -280,10 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: TextField(
                     controller: _controller,
                     enabled: _isModelLoaded && !_isBusy,
-                    decoration: const InputDecoration(
-                      hintText: "Type a message...",
-                      border: OutlineInputBorder(),
-                    ),
+                    decoration: const InputDecoration(hintText: "Type a message...", border: OutlineInputBorder()),
                   ),
                 ),
                 const SizedBox(width: 8),

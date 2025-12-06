@@ -69,8 +69,11 @@ extern "C" {
 
 // 2. Generate Text (Aggressive Stop Version)
     __attribute__((visibility("default"))) __attribute__((used))
-    char* completion(const char* text) {
+    char* completion(const char* text, const char* stop_token) {
         if (!ctx) return strdup("Error: Model not loaded");
+
+        // Convert stop_token to std::string for easier checking
+        std::string stop_sequence(stop_token);
 
         // -- Tokenize --
         std::string prompt(text);
@@ -97,7 +100,7 @@ extern "C" {
 
         // -- Generate Loop --
         std::string result = "";
-        int n_predict = 1000; // Max tokens to predict
+        int n_predict = 1000; 
 
         for (int i = 0; i < n_predict; i++) {
             auto* logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
@@ -113,14 +116,11 @@ extern "C" {
                 }
             }
 
-            // Standard End of Generation check
             if (llama_token_is_eog(model, new_token_id)) {
                 break;
             }
 
-            // Convert to text
             char buf[256];
-            // 'true' at the end enables printing special tokens like </s>
             int n = llama_token_to_piece(model, new_token_id, buf, sizeof(buf), 0, true);
             
             if (n > 0) {
@@ -128,32 +128,25 @@ extern "C" {
                 result += piece;
             }
 
-           // --- AGGRESSIVE STOP LOGIC (UPDATED FOR QWEN) ---
+            // --- DYNAMIC STOP LOGIC ---
             size_t stop_pos;
             
-            // 1. Check for Qwen's standard Stop Token
-            stop_pos = result.find("<|im_end|>");
+            // 1. Check the DYNAMIC stop token passed from Dart
+            stop_pos = result.find(stop_sequence);
             if (stop_pos != std::string::npos) {
                 result = result.substr(0, stop_pos);
                 break; // STOP
             }
 
-            // 2. Check for TinyLlama (Legacy support)
-            stop_pos = result.find("</s>");
-            if (stop_pos != std::string::npos) {
-                result = result.substr(0, stop_pos);
+            // 2. Keep Universal Hallucination Checks (Safety net)
+            // Even if using TinyLlama, we don't want it impersonating the user
+            if (result.find("<|im_start|>") != std::string::npos || 
+                result.find("<|user|>") != std::string::npos ||
+                result.find("### Instruction:") != std::string::npos) {
                 break;
             }
+            // ---------------------------
 
-            // 3. Check if it tries to impersonate the user (ChatML format)
-            stop_pos = result.find("<|im_start|>");
-            if (stop_pos != std::string::npos) {
-                result = result.substr(0, stop_pos);
-                break; 
-            }
-            // -----------------------------
-
-            // Next Step
             batch_clear(batch);
             batch_add(batch, new_token_id, n_tokens + i, 0, true);
 
