@@ -146,28 +146,65 @@ class _ChatScreenState extends State<ChatScreen> {
       await _loadSidebar();
     }
     
-    final userMsg = ChatMessage(conversationId: _currentConversationId, content: text, isUser: true, timestamp: DateTime.now());
+    // 1. User Message
+    final userMsg = ChatMessage(
+        conversationId: _currentConversationId, content: text, isUser: true, timestamp: DateTime.now());
     await _db.insertMessage(userMsg);
+    
+    // 2. Prepare Placeholder for AI Message
+    // We create an empty AI message instantly so we can "fill it up" as tokens arrive
+    final aiMsg = ChatMessage(
+        conversationId: _currentConversationId, content: "", isUser: false, timestamp: DateTime.now());
+    
     setState(() {
       _messages.add(userMsg);
+      _messages.add(aiMsg); // Add empty AI bubble
       _isBusy = true;
     });
 
-    // Prompt Engine now uses the format from the Config!
+    // 3. Build Prompt
     String formattedPrompt = _promptEngine.buildPrompt(
-      _messages.sublist(0, _messages.length - 1), 
+      _messages.sublist(0, _messages.length - 2), // Exclude the 2 new messages from history context
       text 
     );
 
-    await Future.delayed(const Duration(milliseconds: 50)); 
-    String aiReply = _bridge.generate(formattedPrompt, _promptEngine.stopToken).trim();
-
-    final aiMsg = ChatMessage(conversationId: _currentConversationId, content: aiReply, isUser: false, timestamp: DateTime.now());
-    await _db.insertMessage(aiMsg);
-    setState(() {
-      _messages.add(aiMsg);
-      _isBusy = false;
-    });
+    // 4. STREAMING LOGIC
+    String fullResponse = "";
+    
+    // Listen to the stream
+    _bridge.generateStream(formattedPrompt, _promptEngine.stopToken).listen(
+      (token) {
+        fullResponse += token;
+        
+        // Update the UI instantly
+        setState(() {
+          // Update the last message (the AI placeholder) with new text
+          _messages.last = ChatMessage(
+            id: aiMsg.id,
+            conversationId: aiMsg.conversationId,
+            content: fullResponse, // The growing text
+            isUser: false,
+            timestamp: DateTime.now()
+          );
+        });
+      },
+      onDone: () async {
+        // 5. Save final result to DB when done
+        final finalMsg = ChatMessage(
+            conversationId: _currentConversationId, content: fullResponse.trim(), isUser: false, timestamp: DateTime.now());
+        await _db.insertMessage(finalMsg);
+        
+        setState(() {
+          _isBusy = false;
+        });
+      },
+      onError: (e) {
+        setState(() {
+           _status = "Error: $e";
+           _isBusy = false;
+        });
+      }
+    );
   }
 
   @override

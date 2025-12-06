@@ -7,6 +7,9 @@
 
 #define TAG "LLM_Native"
 
+// Defines a pointer to a function that takes a string and returns void
+typedef void (*CallbackFunc)(const char* token);
+
 // Global variables
 static llama_model* model = nullptr;
 static llama_context* ctx = nullptr;
@@ -29,6 +32,25 @@ static void batch_add(struct llama_batch & batch, llama_token id, llama_pos pos,
     batch.n_tokens++;
 }
 // -----------------------------------------------------------
+// Helper: Checks if the end of 'buffer' matches the beginning of 'stop'
+// e.g. buffer="abc <|im", stop="<|im_end|>" -> Returns TRUE
+bool is_partial_match(const std::string& buffer, const std::string& stop) {
+    if (buffer.empty() || stop.empty()) return false;
+    
+    // We check overlaps from length 1 up to length - 1
+    // (If it matched the full length, the main loop would have caught it already)
+    size_t check_len = std::min(buffer.length(), stop.length() - 1);
+    
+    for (size_t len = check_len; len > 0; len--) {
+        // Get the tail of the buffer
+        std::string tail = buffer.substr(buffer.length() - len);
+        // Get the head of the stop word
+        std::string head = stop.substr(0, len);
+        
+        if (tail == head) return true;
+    }
+    return false;
+}
 
 extern "C" {
 
@@ -67,22 +89,25 @@ extern "C" {
         return 0;
     }
 
-// 2. Generate Text (Aggressive Stop Version)
     __attribute__((visibility("default"))) __attribute__((used))
-    char* completion(const char* text, const char* stop_token) {
-        if (!ctx) return strdup("Error: Model not loaded");
-        
-        // Clear previous cache
+    void completion(const char* text, const char* stop_token, CallbackFunc callback) {
+        if (!ctx) { callback("Error: Model not loaded"); return; }
         llama_kv_cache_clear(ctx);
-        
-        // Convert stop_token to std::string for easier checking
-        std::string stop_sequence(stop_token);
 
-        // -- Tokenize --
+        std::string stop_sequence(stop_token);
         std::string prompt(text);
+        
+        // Define all stop words
+        std::vector<std::string> stops;
+        stops.push_back(stop_sequence);       // Dynamic (from Dart)
+        stops.push_back("<|im_end|>");        // Qwen
+        stops.push_back("<|user|>");          // Safety
+        stops.push_back("<|im_start|>");      // Safety
+        stops.push_back("</s>");              // Llama
+
+        // --- TOKENIZE ---
         std::vector<llama_token> tokens_list;
         tokens_list.resize(prompt.size() + 32);
-        
         int n_tokens = llama_tokenize(model, prompt.c_str(), prompt.length(), tokens_list.data(), tokens_list.size(), true, false);
         if (n_tokens < 0) {
             tokens_list.resize(-n_tokens);
@@ -90,31 +115,26 @@ extern "C" {
         }
         tokens_list.resize(n_tokens);
 
-        // -- Batch Setup --
-        llama_batch batch = llama_batch_init(4096, 0, 1); 
-        
+        llama_batch batch = llama_batch_init(4096, 0, 1);
         for (size_t i = 0; i < tokens_list.size(); i++) {
             batch_add(batch, tokens_list[i], i, 0, (i == tokens_list.size() - 1));
         }
 
         if (llama_decode(ctx, batch) != 0) {
             llama_batch_free(batch);
-            return strdup("Error: Decode failed (Context Full?)");
+            callback("Error: Decode failed");
+            return;
         }
 
-        // -- Generate Loop --
-        std::string result = "";
-        int n_predict = 1000; 
+        // --- GENERATION LOOP ---
+        int n_predict = 400; 
+        std::string pending_buffer = "";
 
         for (int i = 0; i < n_predict; i++) {
             auto* logits = llama_get_logits_ith(ctx, batch.n_tokens - 1);
-            
-            if (logits == nullptr) {
-                break; // Prevent SIGSEGV if logits are missing
-            }
+            if (logits == nullptr) break;
 
             int n_vocab = llama_n_vocab(model);
-
             llama_token new_token_id = 0;
             float max_prob = -1e9;
             for (int k = 0; k < n_vocab; k++) {
@@ -133,27 +153,50 @@ extern "C" {
             
             if (n > 0) {
                 std::string piece(buf, n);
-                result += piece;
-            }
+                pending_buffer += piece;
 
-            // --- DYNAMIC STOP LOGIC ---
-            size_t stop_pos;
-            
-            // 1. Check the DYNAMIC stop token passed from Dart
-            stop_pos = result.find(stop_sequence);
-            if (stop_pos != std::string::npos) {
-                result = result.substr(0, stop_pos);
-                break; // STOP
-            }
+                // 1. CHECK FULL MATCH (Stop Immediately)
+                bool stop_hit = false;
+                for (const auto& s : stops) {
+                    size_t pos = pending_buffer.find(s);
+                    if (pos != std::string::npos) {
+                        // Flush safe part
+                        std::string safe = pending_buffer.substr(0, pos);
+                        if (!safe.empty()) callback(safe.c_str());
+                        stop_hit = true;
+                        break;
+                    }
+                }
+                if (stop_hit) break; // EXIT LOOP
 
-            // 2. Keep Universal Hallucination Checks (Safety net)
-            // Even if using TinyLlama, we don't want it impersonating the user
-            if (result.find("<|im_start|>") != std::string::npos || 
-                result.find("<|user|>") != std::string::npos ||
-                result.find("### Instruction:") != std::string::npos) {
-                break;
+                // 2. CHECK PARTIAL MATCH (Hold data if suspicious)
+                bool suspicious = false;
+                for (const auto& s : stops) {
+                    if (is_partial_match(pending_buffer, s)) {
+                        suspicious = true;
+                        break;
+                    }
+                }
+
+                // 3. FLUSH LOGIC
+                if (!suspicious) {
+                    // Safe to print everything!
+                    callback(pending_buffer.c_str());
+                    pending_buffer = "";
+                } else {
+                    // Suspicious! Hold the buffer. 
+                    // But if buffer gets HUGE (e.g. 50 chars), it's probably a false alarm.
+                    // We flush the start to keep UI responsive.
+                    if (pending_buffer.length() > 20) {
+                        // Keep last 10 chars, flush the rest
+                        size_t keep = 10; 
+                        size_t flush_len = pending_buffer.length() - keep;
+                        std::string chunk = pending_buffer.substr(0, flush_len);
+                        callback(chunk.c_str());
+                        pending_buffer = pending_buffer.substr(flush_len);
+                    }
+                }
             }
-            // ---------------------------
 
             batch_clear(batch);
             batch_add(batch, new_token_id, n_tokens + i, 0, true);
@@ -162,8 +205,19 @@ extern "C" {
                 break;
             }
         }
+        
+        // Final Flush (if anything left)
+        if (!pending_buffer.empty()) {
+            // Re-check one last time to be sure no stop token is hiding
+            bool stop_hit = false;
+            for (const auto& s : stops) {
+                 if (pending_buffer.find(s) != std::string::npos) {
+                     stop_hit = true; break;
+                 }
+            }
+            if (!stop_hit) callback(pending_buffer.c_str());
+        }
 
         llama_batch_free(batch);
-        return strdup(result.c_str());
     }
 }
