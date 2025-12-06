@@ -15,6 +15,7 @@ import 'ui/model_sheet.dart';
 import 'ui/chat_bubble.dart';
 import 'ui/chat_drawer.dart';
 import 'ui/chat_input.dart';
+import 'ui/settings_sheet.dart';
 
 void main() {
   runApp(const MyApp());
@@ -52,15 +53,23 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isModelLoaded = false;
   bool _isBusy = false;
   String _loadedModelName = "None";
+  String _systemPrompt = "You are a helpful AI assistant.";
 
   @override
   void initState() {
     super.initState();
     _loadSidebar();
     _autoLoadLastModel();
+    _loadPersona();
   }
 
   // --- LOGIC SECTION ---
+  Future<void> _loadPersona() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _systemPrompt = prefs.getString('system_prompt') ?? "You are a helpful AI assistant.";
+    });
+  }
 
   Future<void> _autoLoadLastModel() async {
     final prefs = await SharedPreferences.getInstance();
@@ -145,7 +154,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
     String formattedPrompt = _promptEngine.buildPrompt(
       _messages.sublist(0, _messages.length - 2), 
-      text 
+      text,
+      systemOverride: _systemPrompt
     );
 
     String fullResponse = "";
@@ -187,8 +197,20 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          // Persona Button
           IconButton(
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.psychology),
+            tooltip: "AI Persona",
+            onPressed: () => showModalBottomSheet(
+              context: context,
+              isScrollControlled: true, // Allows keyboard to push it up
+              builder: (ctx) => SettingsSheet(onSave: _loadPersona),
+            ),
+          ),
+          // Model Button
+          IconButton(
+            icon: const Icon(Icons.download_for_offline),
+            tooltip: "Manage Models",
             onPressed: () => showModalBottomSheet(
               context: context, 
               builder: (ctx) => ModelSheet(onModelSelected: _loadModelInternal)

@@ -17,9 +17,14 @@ class PromptEngine {
     return "</s>";
   }
 
-  String buildPrompt(List<ChatMessage> history, String newUserInput) {
+String buildPrompt(List<ChatMessage> history, String newUserInput, {String? systemOverride}) {
+    
     // 1. Prepare Mandatory Parts
-    String systemStr = _buildSystem("You are a helpful AI assistant.");
+    // Use the override if provided, otherwise default
+    String systemContent = systemOverride ?? "You are a helpful AI assistant.";
+    
+    // Pass dynamic content to helper
+    String systemStr = _buildSystem(systemContent);
     String userInputStr = _buildUser(newUserInput);
     String assistantStartStr = _startAssistant();
 
