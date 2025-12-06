@@ -71,7 +71,10 @@ extern "C" {
     __attribute__((visibility("default"))) __attribute__((used))
     char* completion(const char* text, const char* stop_token) {
         if (!ctx) return strdup("Error: Model not loaded");
-
+        
+        // Clear previous cache
+        llama_kv_cache_clear(ctx);
+        
         // Convert stop_token to std::string for easier checking
         std::string stop_sequence(stop_token);
 
