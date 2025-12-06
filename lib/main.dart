@@ -27,7 +27,23 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'AI Companion',
-      theme: ThemeData(primarySwatch: Colors.indigo),
+      // Light Theme
+      theme: ThemeData(
+        brightness: Brightness.light,
+        primarySwatch: Colors.indigo,
+        useMaterial3: true,
+      ),
+      // Dark Theme
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.indigo,
+        useMaterial3: true,
+        // Customize Dark Colors
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF1E1E1E)),
+        cardColor: const Color(0xFF1E1E1E),
+      ),
+      themeMode: ThemeMode.system, // Auto-switch based on phone settings
       home: const ChatScreen(),
     );
   }
@@ -54,6 +70,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _isBusy = false;
   String _loadedModelName = "None";
   String _systemPrompt = "You are a helpful AI assistant.";
+  double _tps = 0.0;
+  int _tokenCount = 0;
+  final Stopwatch _stopwatch = Stopwatch();
 
   @override
   void initState() {
@@ -146,6 +165,12 @@ class _ChatScreenState extends State<ChatScreen> {
     await _db.insertMessage(userMsg);
     final aiMsg = ChatMessage(conversationId: _currentConversationId, content: "", isUser: false, timestamp: DateTime.now());
     
+   // RESET METRICS
+    _stopwatch.reset();
+    _stopwatch.start();
+    _tokenCount = 0;
+    _tps = 0.0;
+
     setState(() {
       _messages.add(userMsg);
       _messages.add(aiMsg);
@@ -159,9 +184,18 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     String fullResponse = "";
+
     _bridge.generateStream(formattedPrompt, _promptEngine.stopToken).listen(
       (token) {
         fullResponse += token;
+
+        // CALCULATE TPS
+        _tokenCount++;
+        final elapsedSeconds = _stopwatch.elapsedMilliseconds / 1000.0;
+        if (elapsedSeconds > 0) {
+          _tps = _tokenCount / elapsedSeconds;
+        }
+
         setState(() {
           _messages.last = ChatMessage(
             id: aiMsg.id,
@@ -173,6 +207,7 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       },
       onDone: () async {
+        _stopwatch.stop(); // Stop timer
         final finalMsg = ChatMessage(conversationId: _currentConversationId, content: fullResponse.trim(), isUser: false, timestamp: DateTime.now());
         await _db.insertMessage(finalMsg);
         setState(() => _isBusy = false);
@@ -193,7 +228,25 @@ class _ChatScreenState extends State<ChatScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text("AI Companion", style: TextStyle(fontSize: 18)),
-            Text(_isModelLoaded ? _loadedModelName : _status, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w300))
+            Row(
+              children: [
+                // Show Model Name
+                Text(
+                  _isModelLoaded ? _loadedModelName : _status, 
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w300)
+                ),
+                // Show TPS if busy or finished
+                if (_tps > 0) 
+                  Text(
+                    " • ${_tps.toStringAsFixed(1)} t/s",
+                    style: TextStyle(
+                      fontSize: 12, 
+                      fontWeight: FontWeight.bold, 
+                      color: _isBusy ? Colors.greenAccent[100] : Colors.white70
+                    ),
+                  ),
+              ],
+            )
           ],
         ),
         actions: [
@@ -231,8 +284,8 @@ class _ChatScreenState extends State<ChatScreen> {
           // Chat List
           Expanded(
             child: Container(
-              color: const Color(0xFFF5F5F5),
-              child: _messages.isEmpty 
+              color: Theme.of(context).scaffoldBackgroundColor,
+                child: _messages.isEmpty 
                 ? const Center(child: Text("Start a new conversation", style: TextStyle(color: Colors.grey)))
                 : ListView.builder(
                     reverse: true, // Auto-scroll
