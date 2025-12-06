@@ -19,12 +19,7 @@ class PromptEngine {
   String buildPrompt(List<ChatMessage> history, String newUserInput) {
     StringBuffer buffer = StringBuffer();
 
-    // TinyLlama uses a specific System Tag
-    if (format == ModelFormat.tinyLlama) {
-       buffer.write("<|system|>\nYou are a helpful AI assistant.</s>\n");
-    } else {
-       buffer.write(_buildSystem("You are a helpful AI assistant."));
-    }
+    buffer.write(_buildSystem("You are a helpful AI assistant."));
 
     for (var msg in history) {
       if (msg.isUser) {
@@ -42,6 +37,7 @@ class PromptEngine {
 
   String _buildSystem(String content) {
     if (format == ModelFormat.chatML) return "<|im_start|>system\n$content<|im_end|>\n";
+    else if (format == ModelFormat.tinyLlama) return "<|system|>\n$content</s>\n";
     // Alpaca typically skips system prompts or puts them in the first instruction
     return ""; 
   }
