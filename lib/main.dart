@@ -239,10 +239,16 @@ class _ChatScreenState extends State<ChatScreen> {
                     )
                   )
                 : ListView.builder(
+                    // 1. ANCHOR TO BOTTOM
+                    reverse: true, 
                     padding: const EdgeInsets.all(16),
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
-                      final msg = _messages[index];
+                      // 2. FLIP DATA ORDER
+                      // We want index 0 to be the NEWEST message from our list
+                      final reversedIndex = _messages.length - 1 - index;
+                      final msg = _messages[reversedIndex];
+
                       return Align(
                         alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
                         child: Container(
