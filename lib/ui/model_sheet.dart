@@ -19,6 +19,32 @@ class ModelSheet extends StatefulWidget {
 class _ModelSheetState extends State<ModelSheet> {
   final Map<String, double> _downloadProgress = {}; 
   final Map<String, bool> _isDownloading = {};
+  
+  // Track which files exist on disk
+  final Set<String> _existingFiles = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _checkExistingFiles();
+  }
+
+  // Check which models are already downloaded
+  Future<void> _checkExistingFiles() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final newSet = <String>{};
+    
+    for (var model in ModelRegistry.models) {
+      final file = File(p.join(dir.path, model.filename));
+      if (await file.exists()) {
+        newSet.add(model.id);
+      }
+    }
+    
+    if (mounted) {
+      setState(() => _existingFiles.addAll(newSet));
+    }
+  }
 
   Future<void> _handleModelClick(ModelConfig config) async {
     final dir = await getApplicationDocumentsDirectory();
@@ -31,13 +57,23 @@ class _ModelSheetState extends State<ModelSheet> {
     }
   }
 
+  Future<void> _deleteModel(ModelConfig config) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File(p.join(dir.path, config.filename));
+    
+    if (await file.exists()) {
+      await file.delete();
+      setState(() => _existingFiles.remove(config.id));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Deleted ${config.name}")));
+    }
+  }
+
   Future<void> _downloadModel(ModelConfig config, File targetFile) async {
     setState(() {
       _isDownloading[config.id] = true;
       _downloadProgress[config.id] = 0.0;
     });
 
-    // Create a "Sink" to write to the hard drive immediately
     final IOSink sink = targetFile.openWrite();
     
     try {
@@ -47,29 +83,31 @@ class _ModelSheetState extends State<ModelSheet> {
 
       double received = 0;
 
-      // Stream chunks from Internet -> Disk
       await for (var chunk in response.stream) {
-        sink.add(chunk); // Write chunk immediately
-        
+        sink.add(chunk);
         received += chunk.length;
         setState(() {
           _downloadProgress[config.id] = received / contentLength;
         });
       }
 
-      // Finalize the file
       await sink.flush();
       await sink.close();
 
-      // Download complete!
       if (mounted) {
-        setState(() => _isDownloading[config.id] = false);
+        setState(() {
+          _isDownloading[config.id] = false;
+          _existingFiles.add(config.id);
+        });
         _selectModel(targetFile.path, config);
       }
 
     } catch (e) {
-      // Clean up if it fails (close the file so it doesn't get locked)
       await sink.close();
+      // CLEANUP: Delete partial file if download failed
+      if (await targetFile.exists()) {
+        await targetFile.delete();
+      }
       
       if (mounted) {
         setState(() => _isDownloading[config.id] = false);
@@ -102,6 +140,7 @@ class _ModelSheetState extends State<ModelSheet> {
               itemBuilder: (context, index) {
                 final model = ModelRegistry.models[index];
                 final isDownloading = _isDownloading[model.id] ?? false;
+                final isDownloaded = _existingFiles.contains(model.id);
                 final progress = _downloadProgress[model.id] ?? 0.0;
 
                 return Card(
@@ -110,10 +149,16 @@ class _ModelSheetState extends State<ModelSheet> {
                     subtitle: isDownloading 
                         ? LinearProgressIndicator(value: progress)
                         : Text(model.filename),
+                    onTap: isDownloading ? null : () => _handleModelClick(model),
+                    // TRAILING ICON LOGIC
                     trailing: isDownloading
                         ? Text("${(progress * 100).toInt()}%")
-                        : const Icon(Icons.download_for_offline),
-                    onTap: isDownloading ? null : () => _handleModelClick(model),
+                        : isDownloaded
+                            ? IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _deleteModel(model),
+                              )
+                            : const Icon(Icons.download_for_offline),
                   ),
                 );
               },
